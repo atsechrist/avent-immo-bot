@@ -350,10 +350,15 @@ async def admin_supprimer_souscription(request: Request, sid: int):
 @app.get("/admin/conversation/{telefono}", response_class=HTMLResponse)
 async def admin_conversation(request: Request, telefono: str):
     require_admin(request)
-    messages = await obtenir_historial_complet(telefono)
-    prospect = await obtenir_prospect(telefono)
-    bot_actif = await est_bot_actif(telefono)
-    return HTMLResponse(render_conversation(telefono, messages, prospect, bot_actif))
+    try:
+        messages = await obtenir_historial_complet(telefono)
+        prospect = await obtenir_prospect(telefono)
+        bot_actif = await est_bot_actif(telefono)
+        return HTMLResponse(render_conversation(telefono, messages, prospect, bot_actif))
+    except Exception as e:
+        import traceback
+        logger.error(f"Erreur conversation {telefono}: {traceback.format_exc()}")
+        return HTMLResponse(f"<pre style='color:red;padding:20px'>ERREUR: {e}\n\n{traceback.format_exc()}</pre>", status_code=500)
 
 
 @app.get("/admin/pause/{telefono}")
