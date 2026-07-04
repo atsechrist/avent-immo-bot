@@ -4,7 +4,7 @@ import logging
 import secrets
 import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException, Form, UploadFile, File
+from fastapi import FastAPI, Request, HTTPException, Form
 from fastapi.responses import PlainTextResponse, HTMLResponse, RedirectResponse
 from dotenv import load_dotenv
 
@@ -385,76 +385,44 @@ async def admin_send(request: Request, telefono: str, message: str = Form(...)):
     return RedirectResponse(f"/admin/conversation/{telefono}", status_code=302)
 
 
-# ─── Admin — Knowledge Base ───────────────────────────────────────────────────
-
-KNOWLEDGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "knowledge")
-ALLOWED_EXTS = {".txt", ".md", ".csv", ".json", ".yaml", ".yml"}
-
-
-def _lister_fichiers_knowledge() -> list[dict]:
-    os.makedirs(KNOWLEDGE_DIR, exist_ok=True)
-    fichiers = []
-    for nom in sorted(os.listdir(KNOWLEDGE_DIR)):
-        if nom.startswith("."):
-            continue
-        chemin = os.path.join(KNOWLEDGE_DIR, nom)
-        if not os.path.isfile(chemin):
-            continue
-        taille = os.path.getsize(chemin)
-        ext = os.path.splitext(nom)[1].lower()
-        fichiers.append({"nom": nom, "taille": taille, "editable": ext in ALLOWED_EXTS})
-    return fichiers
-
+# ─── Admin — Knowledge Base (system prompt en ligne) ─────────────────────────
 
 @app.get("/admin/knowledge", response_class=HTMLResponse)
-async def admin_knowledge(request: Request, edit: str = "", msg: str = ""):
+async def admin_knowledge(request: Request, msg: str = ""):
     require_admin(request)
-    fichiers = _lister_fichiers_knowledge()
-    contenu_edit = ""
-    if edit:
-        chemin = os.path.join(KNOWLEDGE_DIR, edit)
-        if os.path.isfile(chemin) and os.path.splitext(edit)[1].lower() in ALLOWED_EXTS:
-            with open(chemin, "r", encoding="utf-8", errors="replace") as f:
-                contenu_edit = f.read()
-    return HTMLResponse(render_knowledge(fichiers, edit, contenu_edit, msg))
+    from agent.memory import obtener_config
+    import yaml as _yaml
+    # Charger valeurs depuis DB, sinon depuis prompts.yaml
+    def _yaml_val(key: str) -> str:
+        try:
+            with open("config/prompts.yaml", "r", encoding="utf-8") as f:
+                return (_yaml.safe_load(f) or {}).get(key, "")
+        except Exception:
+            return ""
+
+    system_prompt = await obtener_config("system_prompt") or _yaml_val("system_prompt")
+    fallback = await obtener_config("fallback_message") or _yaml_val("fallback_message")
+    error_msg = await obtener_config("error_message") or _yaml_val("error_message")
+    source = "🟢 Base en ligne (DB)" if await obtener_config("system_prompt") else "🟡 Base locale (prompts.yaml)"
+    return HTMLResponse(render_knowledge(system_prompt, fallback, error_msg, source, msg))
 
 
-@app.post("/admin/knowledge/upload")
-async def admin_knowledge_upload(request: Request, fichier: UploadFile = File(...)):
+@app.post("/admin/knowledge")
+async def admin_knowledge_save(
+    request: Request,
+    system_prompt: str = Form(...),
+    fallback_message: str = Form(""),
+    error_message: str = Form(""),
+):
     require_admin(request)
-    os.makedirs(KNOWLEDGE_DIR, exist_ok=True)
-    nom = fichier.filename or "upload.txt"
-    nom = re.sub(r"[^\w.\-]", "_", nom)
-    chemin = os.path.join(KNOWLEDGE_DIR, nom)
-    contenu = await fichier.read()
-    with open(chemin, "wb") as f:
-        f.write(contenu)
-    logger.info(f"Knowledge upload: {nom} ({len(contenu)} octets)")
-    return RedirectResponse(f"/admin/knowledge?msg=Fichier+{nom}+uploadé", status_code=302)
-
-
-@app.post("/admin/knowledge/save")
-async def admin_knowledge_save(request: Request, nom: str = Form(...), contenu: str = Form(...)):
-    require_admin(request)
-    nom = re.sub(r"[^\w.\-]", "_", nom)
-    ext = os.path.splitext(nom)[1].lower()
-    if ext not in ALLOWED_EXTS:
-        return RedirectResponse("/admin/knowledge?msg=Extension+non+autorisée", status_code=302)
-    chemin = os.path.join(KNOWLEDGE_DIR, nom)
-    with open(chemin, "w", encoding="utf-8") as f:
-        f.write(contenu)
-    logger.info(f"Knowledge sauvegardé: {nom}")
-    return RedirectResponse(f"/admin/knowledge?msg=Fichier+{nom}+sauvegardé", status_code=302)
-
-
-@app.get("/admin/knowledge/supprimer/{nom}")
-async def admin_knowledge_supprimer(request: Request, nom: str):
-    require_admin(request)
-    chemin = os.path.join(KNOWLEDGE_DIR, nom)
-    if os.path.isfile(chemin):
-        os.remove(chemin)
-        logger.info(f"Knowledge supprimé: {nom}")
-    return RedirectResponse("/admin/knowledge?msg=Fichier+supprimé", status_code=302)
+    from agent.memory import guardar_config
+    await guardar_config("system_prompt", system_prompt.strip())
+    if fallback_message.strip():
+        await guardar_config("fallback_message", fallback_message.strip())
+    if error_message.strip():
+        await guardar_config("error_message", error_message.strip())
+    logger.info("Knowledge base (system prompt) mis à jour en DB")
+    return RedirectResponse("/admin/knowledge?msg=Base+de+connaissance+sauvegardée+en+ligne", status_code=302)
 
 
 # ─── Campagne (relance prospects) ─────────────────────────────────────────────
@@ -796,54 +764,63 @@ def render_conversation(telefono: str, messages: list, prospect: dict | None, bo
 </div></body></html>"""
 
 
-def render_knowledge(fichiers: list, edit_nom: str, contenu_edit: str, msg: str) -> str:
-    rows = ""
-    for f in fichiers:
-        taille_kb = f"{'< 1' if f['taille'] < 1024 else round(f['taille']/1024, 1)} Ko"
-        actions = ""
-        if f["editable"]:
-            actions += f'<a href="/admin/knowledge?edit={f["nom"]}" class="btn btn-blue" style="font-size:11px;padding:4px 8px">Editer</a> '
-        actions += f'<a href="/admin/knowledge/supprimer/{f["nom"]}" class="btn btn-red" style="font-size:11px;padding:4px 8px" onclick="return confirm(\'Supprimer ?\')">Supprimer</a>'
-        rows += f"<tr><td>{f['nom']}</td><td>{taille_kb}</td><td>{actions}</td></tr>"
-
+def render_knowledge(system_prompt: str, fallback: str, error_msg: str, source: str, msg: str) -> str:
     msg_html = f'<div style="background:#e8f8f5;color:#27ae60;padding:10px 14px;border-radius:8px;margin-bottom:16px">{msg}</div>' if msg else ""
-
-    edit_html = ""
-    if edit_nom:
-        contenu_safe = contenu_edit.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        edit_html = f"""
-  <div class="card" style="margin-top:20px">
-    <h2>Editer : {edit_nom}</h2>
-    <form method="POST" action="/admin/knowledge/save">
-      <input type="hidden" name="nom" value="{edit_nom}">
-      <textarea name="contenu" rows="20" style="font-family:monospace;font-size:12px">{contenu_safe}</textarea>
-      <div style="margin-top:10px;display:flex;gap:10px">
-        <button type="submit" class="btn btn-gold">Sauvegarder</button>
-        <a href="/admin/knowledge" class="btn btn-gray">Annuler</a>
-      </div>
-    </form>
-  </div>"""
+    sp_safe = system_prompt.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    fb_safe = fallback.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    em_safe = error_msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     return f"""<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Knowledge - NAYA Admin</title>{CSS_BASE}</head><body>
+<title>Base de connaissance — NAYA Admin</title>{CSS_BASE}</head><body>
 {nav()}
 <div class="container">
   {msg_html}
   <div class="card">
-    <h2>Ajouter un fichier de connaissance</h2>
-    <p style="font-size:12px;color:#7f8c8d;margin-bottom:12px">Formats acceptes : .txt .md .csv .json .yaml (editables en ligne) - aussi .pdf .docx (lecture seule)</p>
-    <form method="POST" action="/admin/knowledge/upload" enctype="multipart/form-data" style="display:flex;gap:10px;align-items:center">
-      <input type="file" name="fichier" required accept=".txt,.md,.csv,.json,.yaml,.yml,.pdf,.docx" style="flex:1">
-      <button type="submit" class="btn btn-gold">Uploader</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h2>📚 Base de connaissance de NAYA</h2>
+      <span style="font-size:13px;font-weight:600">{source}</span>
+    </div>
+    <p style="font-size:13px;color:#7f8c8d;margin-bottom:20px">
+      Le contenu sauvegardé ici est stocké en base de données et utilisé <strong>en priorité</strong>
+      sur le fichier local <code>prompts.yaml</code>. Modifiez le texte ci-dessous et cliquez sur
+      <em>Sauvegarder</em> — NAYA utilisera immédiatement la nouvelle version.
+    </p>
+    <form method="POST" action="/admin/knowledge">
+      <label style="font-size:13px;font-weight:700;color:#1a1a2e;display:block;margin-bottom:6px">
+        🧠 System prompt (instructions principales de NAYA)
+      </label>
+      <textarea name="system_prompt" rows="28"
+        style="font-family:monospace;font-size:12px;line-height:1.6;border:2px solid #e0c97f;border-radius:8px;padding:12px"
+      >{sp_safe}</textarea>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+        <div>
+          <label style="font-size:12px;font-weight:700;color:#1a1a2e;display:block;margin-bottom:6px">
+            💬 Message de fallback (si NAYA ne comprend pas)
+          </label>
+          <textarea name="fallback_message" rows="3"
+            style="font-family:monospace;font-size:12px;border:1px solid #ddd;border-radius:8px;padding:10px"
+          >{fb_safe}</textarea>
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:700;color:#1a1a2e;display:block;margin-bottom:6px">
+            ⚠️ Message d'erreur (si problème technique)
+          </label>
+          <textarea name="error_message" rows="3"
+            style="font-family:monospace;font-size:12px;border:1px solid #ddd;border-radius:8px;padding:10px"
+          >{em_safe}</textarea>
+        </div>
+      </div>
+
+      <div style="margin-top:20px;display:flex;gap:12px;align-items:center">
+        <button type="submit" class="btn btn-gold" style="padding:12px 28px;font-size:14px">
+          💾 Sauvegarder en ligne
+        </button>
+        <span style="font-size:12px;color:#7f8c8d">
+          La base en ligne est prioritaire sur le fichier local.
+        </span>
+      </div>
     </form>
   </div>
-  <div class="card">
-    <h2>Fichiers ({len(fichiers)})</h2>
-    <table>
-      <tr><th>Fichier</th><th>Taille</th><th>Actions</th></tr>
-      {rows or '<tr><td colspan="3" style="text-align:center;color:#7f8c8d;padding:20px">Aucun fichier dans /knowledge</td></tr>'}
-    </table>
-  </div>
-  {edit_html}
 </div></body></html>"""

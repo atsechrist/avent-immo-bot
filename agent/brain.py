@@ -10,7 +10,7 @@ logger = logging.getLogger("avent-immo")
 client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
 
 
-def cargar_config() -> dict:
+def _lire_yaml() -> dict:
     try:
         with open("config/prompts.yaml", "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
@@ -18,18 +18,41 @@ def cargar_config() -> dict:
         return {}
 
 
-async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
-    config = cargar_config()
-    system_prompt = config.get("system_prompt", "Tu es un assistant immobilier professionnel. Réponds toujours en français.")
-    fallback = config.get("fallback_message", "Je n'ai pas bien compris. Pouvez-vous reformuler ?")
-    error_msg = config.get("error_message", "Problème technique, veuillez réessayer.")
+async def cargar_system_prompt() -> str:
+    """Lit le system prompt depuis la DB en priorité, sinon prompts.yaml."""
+    from agent.memory import obtener_config
+    valeur = await obtener_config("system_prompt")
+    if valeur:
+        return valeur
+    return _lire_yaml().get("system_prompt", "Tu es NAYA, assistante immobilière d'AVENT GROUPE. Réponds en français.")
 
+
+async def _obtener_fallback() -> str:
+    from agent.memory import obtener_config
+    valeur = await obtener_config("fallback_message")
+    if valeur:
+        return valeur
+    return _lire_yaml().get("fallback_message", "Je n'ai pas bien compris. Pouvez-vous reformuler ?")
+
+
+async def _obtener_error() -> str:
+    from agent.memory import obtener_config
+    valeur = await obtener_config("error_message")
+    if valeur:
+        return valeur
+    return _lire_yaml().get("error_message", "Problème technique, veuillez réessayer dans quelques instants.")
+
+
+async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
     if not mensaje or len(mensaje.strip()) < 2:
-        return fallback
+        return await _obtener_fallback()
+
+    system_prompt = await cargar_system_prompt()
 
     messages = [{"role": "system", "content": system_prompt}]
     for m in historial:
-        messages.append({"role": m["role"], "content": m["content"]})
+        if m.get("content"):
+            messages.append({"role": m["role"], "content": m["content"]})
     messages.append({"role": "user", "content": mensaje})
 
     try:
@@ -41,4 +64,4 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
         return response.choices[0].message.content
     except Exception as e:
         logger.error(f"Erreur Mistral API: {e}")
-        return error_msg
+        return await _obtener_error()
