@@ -200,28 +200,40 @@ async def webhook_handler(request: Request):
             respuesta = nettoyer_marqueurs(respuesta_brute)
 
             await guardar_mensaje(msg.telefono, "user", texto_client)
-            await guardar_mensaje(msg.telefono, "assistant", respuesta)
 
             # ── Envoi de la réponse ───────────────────────────────────────────
             if c_est_vocal:
                 # Répondre en vocal si le client a envoyé un vocal
                 envoi_vocal_ok = False
+                audio_url_envoye = None
                 try:
                     from agent.tts import generer_audio
                     from agent.cloudinary_upload import uploader_audio
                     audio_resp = await generer_audio(respuesta)
                     if audio_resp:
                         nom = f"naya_{uuid.uuid4().hex[:8]}.mp3"
-                        audio_url = await uploader_audio(audio_resp, nom)
-                        if audio_url:
-                            envoi_vocal_ok = await proveedor.enviar_audio(msg.telefono, audio_url)
+                        audio_url_envoye = await uploader_audio(audio_resp, nom)
+                        if audio_url_envoye:
+                            envoi_vocal_ok = await proveedor.enviar_audio(msg.telefono, audio_url_envoye)
+                            if not envoi_vocal_ok:
+                                logger.error(f"enviar_audio échoué pour {msg.telefono}")
+                        else:
+                            logger.error("Cloudinary upload audio échoué — vérifier CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET")
+                    else:
+                        logger.error("TTS audio vide — edge-tts/gTTS échoué")
                 except Exception as e_tts:
                     logger.error(f"Erreur TTS/upload: {e_tts}")
-                if not envoi_vocal_ok:
+
+                if envoi_vocal_ok and audio_url_envoye:
+                    # Stocker l'URL audio pour l'afficher dans l'admin
+                    await guardar_mensaje(msg.telefono, "assistant", f"[🔊AUDIO]{audio_url_envoye}\n{respuesta}")
+                else:
                     # Fallback texte si la voix échoue
                     await proveedor.enviar_mensaje(msg.telefono, respuesta)
+                    await guardar_mensaje(msg.telefono, "assistant", respuesta)
             else:
                 await proveedor.enviar_mensaje(msg.telefono, respuesta)
+                await guardar_mensaje(msg.telefono, "assistant", respuesta)
 
             await mettre_a_jour_prospect(msg.telefono)
             logger.info(f"Réponse à {msg.telefono}: {respuesta[:80]}")
@@ -699,10 +711,25 @@ def render_conversation(telefono: str, messages: list, prospect: dict | None, bo
         bg = "#e0c97f" if m["role"] == "assistant" else "#f0f2f5"
         color = "#1a1a2e" if m["role"] == "assistant" else "#333"
         label = "NAYA" if m["role"] == "assistant" else "Client"
+        content = m["content"]
+
+        # Détection message vocal client
+        if content.startswith("[Message vocal]"):
+            transcription = content[len("[Message vocal]"):].strip()
+            contenu_html = f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="font-size:16px">🎤</span><em style="font-size:11px;opacity:.8">Message vocal</em></div><div>{transcription.replace(chr(10), "<br>")}</div>'
+        # Détection réponse audio NAYA
+        elif content.startswith("[🔊AUDIO]"):
+            reste = content[len("[🔊AUDIO]"):]
+            premiere_ligne, _, texte_dessous = reste.partition("\n")
+            audio_src = premiere_ligne.strip()
+            contenu_html = f'<div style="margin-bottom:6px"><audio controls src="{audio_src}" style="width:100%;max-width:300px;border-radius:8px"></audio></div><div style="font-size:12px;opacity:.8">{texte_dessous.replace(chr(10), "<br>")}</div>'
+        else:
+            contenu_html = content.replace(chr(10), "<br>")
+
         msgs_html += f"""<div style="display:flex;justify-content:{align};margin-bottom:10px">
           <div style="max-width:70%;background:{bg};color:{color};padding:10px 14px;border-radius:12px;font-size:13px">
             <div style="font-size:10px;opacity:.7;margin-bottom:4px">{label} · {m['timestamp']}</div>
-            {m['content'].replace(chr(10), '<br>')}
+            {contenu_html}
           </div>
         </div>"""
 
