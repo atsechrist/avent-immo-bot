@@ -1,13 +1,13 @@
 import os
 import yaml
 import logging
-from anthropic import AsyncAnthropic
+from mistralai import Mistral
 from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger("avent-immo")
 
-client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
 
 
 def cargar_config() -> dict:
@@ -27,17 +27,18 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
     if not mensaje or len(mensaje.strip()) < 2:
         return fallback
 
-    mensajes = [{"role": m["role"], "content": m["content"]} for m in historial]
-    mensajes.append({"role": "user", "content": mensaje})
+    messages = [{"role": "system", "content": system_prompt}]
+    for m in historial:
+        messages.append({"role": m["role"], "content": m["content"]})
+    messages.append({"role": "user", "content": mensaje})
 
     try:
-        response = await client.messages.create(
-            model="claude-sonnet-4-6",
+        response = await client.chat.complete_async(
+            model="mistral-large-latest",
+            messages=messages,
             max_tokens=1024,
-            system=system_prompt,
-            messages=mensajes,
         )
-        return response.content[0].text
+        return response.choices[0].message.content
     except Exception as e:
-        logger.error(f"Erreur Claude API: {e}")
+        logger.error(f"Erreur Mistral API: {e}")
         return error_msg
