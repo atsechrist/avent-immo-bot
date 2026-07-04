@@ -83,6 +83,8 @@ def nettoyer_marqueurs(texte: str) -> str:
     """Supprime les marqueurs internes avant d'envoyer au client."""
     texte = SOUSCRIPTION_RE.sub("", texte)
     texte = PROSPECT_RE.sub("", texte)
+    # Supprime les directives de ton/style entre *[...] que Mistral génère parfois
+    texte = re.sub(r"\*\[[^\]]*\]\*", "", texte)
     # Supprime les lignes contenant des instructions internes que Mistral génère parfois
     lignes = texte.splitlines()
     lignes_propres = []
