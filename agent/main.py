@@ -2,8 +2,9 @@ import os
 import re
 import logging
 import secrets
+import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException, Form, Depends
+from fastapi import FastAPI, Request, HTTPException, Form, UploadFile, File
 from fastapi.responses import PlainTextResponse, HTMLResponse, RedirectResponse
 from dotenv import load_dotenv
 
@@ -18,6 +19,7 @@ from agent.memory import (
     obtenir_conversations_recentes, est_bot_actif, pausar_bot, reanudar_bot,
 )
 from agent.providers import obtener_proveedor
+from agent.providers.meta import ProveedorMeta
 
 load_dotenv()
 
@@ -116,7 +118,7 @@ async def webhook_handler(request: Request):
     try:
         mensajes = await proveedor.parsear_webhook(request)
         for msg in mensajes:
-            if msg.es_propio or not msg.texto:
+            if msg.es_propio:
                 continue
             if msg.mensaje_id in _messages_traites:
                 continue
@@ -124,40 +126,104 @@ async def webhook_handler(request: Request):
             if len(_messages_traites) > 2000:
                 _messages_traites.clear()
 
-            # Enregistrer le prospect (première fois)
             await enregistrer_prospect(msg.telefono)
 
-            # Vérifier si le bot est en pause (prise en main humaine)
             if not await est_bot_actif(msg.telefono):
                 logger.info(f"Bot en pause pour {msg.telefono} — message ignoré")
                 continue
 
-            logger.info(f"Message de {msg.telefono}: {msg.texto}")
+            # ── Traitement selon le type de message ──────────────────────────
+            texto_client = msg.texto  # texte visible dans l'historique
+            c_est_vocal = False       # True si le client a envoyé un vocal
+
+            if msg.tipo == "audio" and msg.media_id:
+                # Télécharger et transcrire le message vocal
+                logger.info(f"Message vocal de {msg.telefono} (media_id={msg.media_id})")
+                if isinstance(proveedor, ProveedorMeta):
+                    audio_bytes, mime = await proveedor.telecharger_media(msg.media_id)
+                    if audio_bytes:
+                        from agent.transcription import transcrire_audio
+                        transcription = await transcrire_audio(audio_bytes, mime or msg.mime_type or "audio/ogg")
+                        if transcription:
+                            texto_client = f"[Message vocal] {transcription}"
+                            c_est_vocal = True
+                        else:
+                            texto_client = "[Message vocal — transcription indisponible]"
+                    else:
+                        texto_client = "[Message vocal — téléchargement échoué]"
+
+            elif msg.tipo == "image" and msg.media_id:
+                logger.info(f"Image de {msg.telefono}")
+                caption = msg.texto or ""
+                if isinstance(proveedor, ProveedorMeta):
+                    image_bytes, mime = await proveedor.telecharger_media(msg.media_id)
+                    if image_bytes:
+                        from agent.cloudinary_upload import uploader_image
+                        img_url = await uploader_image(image_bytes, f"img_{uuid.uuid4().hex[:8]}.jpg")
+                        if img_url and caption:
+                            texto_client = f"[Image envoyée] {caption}\n(URL: {img_url})"
+                        elif img_url:
+                            texto_client = f"[Image envoyée] (URL: {img_url})"
+                        else:
+                            texto_client = f"[Image envoyée]{' — ' + caption if caption else ''}"
+                    else:
+                        texto_client = f"[Image envoyée]{' — ' + caption if caption else ''}"
+                if not texto_client:
+                    texto_client = "[Le client a envoyé une image]"
+
+            elif msg.tipo == "video":
+                caption = msg.texto or ""
+                texto_client = f"[Vidéo envoyée]{' — ' + caption if caption else ''}"
+
+            elif msg.tipo == "document":
+                texto_client = f"[Document envoyé]{' — ' + msg.texto if msg.texto else ''}"
+
+            # Ignorer si on n'a aucun texte à traiter
+            if not texto_client:
+                logger.info(f"Message sans texte ignoré ({msg.tipo}) de {msg.telefono}")
+                continue
+
+            logger.info(f"Message de {msg.telefono} ({msg.tipo}): {texto_client[:100]}")
 
             historial = await obtener_historial(msg.telefono)
-            respuesta_brute = await generar_respuesta(msg.texto, historial)
+            respuesta_brute = await generar_respuesta(texto_client, historial)
 
-            # Détecter une souscription confirmée
             souscription_data = extraire_souscription(respuesta_brute)
             if souscription_data:
                 await guardar_souscription(msg.telefono, souscription_data)
                 logger.info(f"Souscription enregistrée pour {msg.telefono}: {souscription_data}")
 
-            # Détecter une mise à jour prospect
             prospect_data = extraire_mise_a_jour_prospect(respuesta_brute)
             if prospect_data:
                 await mettre_a_jour_prospect(msg.telefono, **prospect_data)
 
-            # Nettoyer les marqueurs avant envoi au client
             respuesta = nettoyer_marqueurs(respuesta_brute)
 
-            await guardar_mensaje(msg.telefono, "user", msg.texto)
+            await guardar_mensaje(msg.telefono, "user", texto_client)
             await guardar_mensaje(msg.telefono, "assistant", respuesta)
-            await proveedor.enviar_mensaje(msg.telefono, respuesta)
 
-            # Mettre à jour l'activité du prospect
+            # ── Envoi de la réponse ───────────────────────────────────────────
+            if c_est_vocal:
+                # Répondre en vocal si le client a envoyé un vocal
+                envoi_vocal_ok = False
+                try:
+                    from agent.tts import generer_audio
+                    from agent.cloudinary_upload import uploader_audio
+                    audio_resp = await generer_audio(respuesta)
+                    if audio_resp:
+                        nom = f"naya_{uuid.uuid4().hex[:8]}.mp3"
+                        audio_url = await uploader_audio(audio_resp, nom)
+                        if audio_url:
+                            envoi_vocal_ok = await proveedor.enviar_audio(msg.telefono, audio_url)
+                except Exception as e_tts:
+                    logger.error(f"Erreur TTS/upload: {e_tts}")
+                if not envoi_vocal_ok:
+                    # Fallback texte si la voix échoue
+                    await proveedor.enviar_mensaje(msg.telefono, respuesta)
+            else:
+                await proveedor.enviar_mensaje(msg.telefono, respuesta)
+
             await mettre_a_jour_prospect(msg.telefono)
-
             logger.info(f"Réponse à {msg.telefono}: {respuesta[:80]}")
 
         return {"status": "ok"}
@@ -319,6 +385,78 @@ async def admin_send(request: Request, telefono: str, message: str = Form(...)):
     return RedirectResponse(f"/admin/conversation/{telefono}", status_code=302)
 
 
+# ─── Admin — Knowledge Base ───────────────────────────────────────────────────
+
+KNOWLEDGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "knowledge")
+ALLOWED_EXTS = {".txt", ".md", ".csv", ".json", ".yaml", ".yml"}
+
+
+def _lister_fichiers_knowledge() -> list[dict]:
+    os.makedirs(KNOWLEDGE_DIR, exist_ok=True)
+    fichiers = []
+    for nom in sorted(os.listdir(KNOWLEDGE_DIR)):
+        if nom.startswith("."):
+            continue
+        chemin = os.path.join(KNOWLEDGE_DIR, nom)
+        if not os.path.isfile(chemin):
+            continue
+        taille = os.path.getsize(chemin)
+        ext = os.path.splitext(nom)[1].lower()
+        fichiers.append({"nom": nom, "taille": taille, "editable": ext in ALLOWED_EXTS})
+    return fichiers
+
+
+@app.get("/admin/knowledge", response_class=HTMLResponse)
+async def admin_knowledge(request: Request, edit: str = "", msg: str = ""):
+    require_admin(request)
+    fichiers = _lister_fichiers_knowledge()
+    contenu_edit = ""
+    if edit:
+        chemin = os.path.join(KNOWLEDGE_DIR, edit)
+        if os.path.isfile(chemin) and os.path.splitext(edit)[1].lower() in ALLOWED_EXTS:
+            with open(chemin, "r", encoding="utf-8", errors="replace") as f:
+                contenu_edit = f.read()
+    return HTMLResponse(render_knowledge(fichiers, edit, contenu_edit, msg))
+
+
+@app.post("/admin/knowledge/upload")
+async def admin_knowledge_upload(request: Request, fichier: UploadFile = File(...)):
+    require_admin(request)
+    os.makedirs(KNOWLEDGE_DIR, exist_ok=True)
+    nom = fichier.filename or "upload.txt"
+    nom = re.sub(r"[^\w.\-]", "_", nom)
+    chemin = os.path.join(KNOWLEDGE_DIR, nom)
+    contenu = await fichier.read()
+    with open(chemin, "wb") as f:
+        f.write(contenu)
+    logger.info(f"Knowledge upload: {nom} ({len(contenu)} octets)")
+    return RedirectResponse(f"/admin/knowledge?msg=Fichier+{nom}+uploadé", status_code=302)
+
+
+@app.post("/admin/knowledge/save")
+async def admin_knowledge_save(request: Request, nom: str = Form(...), contenu: str = Form(...)):
+    require_admin(request)
+    nom = re.sub(r"[^\w.\-]", "_", nom)
+    ext = os.path.splitext(nom)[1].lower()
+    if ext not in ALLOWED_EXTS:
+        return RedirectResponse("/admin/knowledge?msg=Extension+non+autorisée", status_code=302)
+    chemin = os.path.join(KNOWLEDGE_DIR, nom)
+    with open(chemin, "w", encoding="utf-8") as f:
+        f.write(contenu)
+    logger.info(f"Knowledge sauvegardé: {nom}")
+    return RedirectResponse(f"/admin/knowledge?msg=Fichier+{nom}+sauvegardé", status_code=302)
+
+
+@app.get("/admin/knowledge/supprimer/{nom}")
+async def admin_knowledge_supprimer(request: Request, nom: str):
+    require_admin(request)
+    chemin = os.path.join(KNOWLEDGE_DIR, nom)
+    if os.path.isfile(chemin):
+        os.remove(chemin)
+        logger.info(f"Knowledge supprimé: {nom}")
+    return RedirectResponse("/admin/knowledge?msg=Fichier+supprimé", status_code=302)
+
+
 # ─── Campagne (relance prospects) ─────────────────────────────────────────────
 
 @app.get("/campagne/contacts")
@@ -406,6 +544,7 @@ def nav(active: str = "") -> str:
         ("/admin", "🏠 Dashboard"),
         ("/admin/prospects", "👥 Prospects"),
         ("/admin/souscriptions", "💰 Souscriptions"),
+        ("/admin/knowledge", "📚 Knowledge"),
         ("/admin/logout", "🚪 Déconnexion"),
     ]
     items = "".join(f'<a href="{url}">{label}</a>' for url, label in links)
@@ -654,4 +793,57 @@ def render_conversation(telefono: str, messages: list, prospect: dict | None, bo
       </div>
     </div>
   </div>
+</div></body></html>"""
+
+
+def render_knowledge(fichiers: list, edit_nom: str, contenu_edit: str, msg: str) -> str:
+    rows = ""
+    for f in fichiers:
+        taille_kb = f"{'< 1' if f['taille'] < 1024 else round(f['taille']/1024, 1)} Ko"
+        actions = ""
+        if f["editable"]:
+            actions += f'<a href="/admin/knowledge?edit={f["nom"]}" class="btn btn-blue" style="font-size:11px;padding:4px 8px">Editer</a> '
+        actions += f'<a href="/admin/knowledge/supprimer/{f["nom"]}" class="btn btn-red" style="font-size:11px;padding:4px 8px" onclick="return confirm(\'Supprimer ?\')">Supprimer</a>'
+        rows += f"<tr><td>{f['nom']}</td><td>{taille_kb}</td><td>{actions}</td></tr>"
+
+    msg_html = f'<div style="background:#e8f8f5;color:#27ae60;padding:10px 14px;border-radius:8px;margin-bottom:16px">{msg}</div>' if msg else ""
+
+    edit_html = ""
+    if edit_nom:
+        contenu_safe = contenu_edit.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        edit_html = f"""
+  <div class="card" style="margin-top:20px">
+    <h2>Editer : {edit_nom}</h2>
+    <form method="POST" action="/admin/knowledge/save">
+      <input type="hidden" name="nom" value="{edit_nom}">
+      <textarea name="contenu" rows="20" style="font-family:monospace;font-size:12px">{contenu_safe}</textarea>
+      <div style="margin-top:10px;display:flex;gap:10px">
+        <button type="submit" class="btn btn-gold">Sauvegarder</button>
+        <a href="/admin/knowledge" class="btn btn-gray">Annuler</a>
+      </div>
+    </form>
+  </div>"""
+
+    return f"""<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Knowledge - NAYA Admin</title>{CSS_BASE}</head><body>
+{nav()}
+<div class="container">
+  {msg_html}
+  <div class="card">
+    <h2>Ajouter un fichier de connaissance</h2>
+    <p style="font-size:12px;color:#7f8c8d;margin-bottom:12px">Formats acceptes : .txt .md .csv .json .yaml (editables en ligne) - aussi .pdf .docx (lecture seule)</p>
+    <form method="POST" action="/admin/knowledge/upload" enctype="multipart/form-data" style="display:flex;gap:10px;align-items:center">
+      <input type="file" name="fichier" required accept=".txt,.md,.csv,.json,.yaml,.yml,.pdf,.docx" style="flex:1">
+      <button type="submit" class="btn btn-gold">Uploader</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Fichiers ({len(fichiers)})</h2>
+    <table>
+      <tr><th>Fichier</th><th>Taille</th><th>Actions</th></tr>
+      {rows or '<tr><td colspan="3" style="text-align:center;color:#7f8c8d;padding:20px">Aucun fichier dans /knowledge</td></tr>'}
+    </table>
+  </div>
+  {edit_html}
 </div></body></html>"""
