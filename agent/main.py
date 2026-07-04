@@ -155,9 +155,16 @@ async def webhook_handler(request: Request):
                     audio_bytes, mime = await proveedor.telecharger_media(msg.media_id)
                     if audio_bytes:
                         from agent.transcription import transcrire_audio
+                        from agent.cloudinary_upload import uploader_audio
+                        # Upload du vocal client sur Cloudinary pour le rejouer dans l'admin
+                        ext = "ogg" if (mime or "").startswith("audio/ogg") else "mp3"
+                        client_audio_url = await uploader_audio(audio_bytes, f"client_{uuid.uuid4().hex[:8]}.{ext}")
                         transcription = await transcrire_audio(audio_bytes, mime or msg.mime_type or "audio/ogg")
                         if transcription:
-                            texto_client = f"[Message vocal] {transcription}"
+                            if client_audio_url:
+                                texto_client = f"[🎤AUDIO]{client_audio_url}\n{transcription}"
+                            else:
+                                texto_client = f"[Message vocal] {transcription}"
                             c_est_vocal = True
                         else:
                             texto_client = "[Message vocal — transcription indisponible]"
@@ -725,8 +732,18 @@ def render_conversation(telefono: str, messages: list, prospect: dict | None, bo
         label = "NAYA" if m["role"] == "assistant" else "Client"
         content = m["content"]
 
-        # Détection message vocal client
-        if content.startswith("[Message vocal]"):
+        # Détection message vocal client (avec URL audio Cloudinary)
+        if content.startswith("[🎤AUDIO]"):
+            reste = content[len("[🎤AUDIO]"):]
+            audio_src, _, transcription = reste.partition("\n")
+            audio_src = audio_src.strip()
+            contenu_html = (
+                f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
+                f'<span style="font-size:16px">🎤</span><em style="font-size:11px;opacity:.8">Message vocal</em></div>'
+                f'<audio controls src="{audio_src}" style="width:100%;max-width:280px;border-radius:8px;margin-bottom:4px"></audio>'
+                f'<div style="font-size:12px;opacity:.85;margin-top:4px">{transcription.strip().replace(chr(10), "<br>")}</div>'
+            )
+        elif content.startswith("[Message vocal]"):
             transcription = content[len("[Message vocal]"):].strip()
             contenu_html = f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="font-size:16px">🎤</span><em style="font-size:11px;opacity:.8">Message vocal</em></div><div>{transcription.replace(chr(10), "<br>")}</div>'
         # Détection réponse audio NAYA
