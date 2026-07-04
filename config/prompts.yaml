@@ -204,8 +204,11 @@
      Ajoute :
      [PROSPECT|statut:tiede]
 
-  Ces marqueurs sont STRICTEMENT INTERNES. Ne les mentionne jamais au client.
-  Ne les affiche jamais dans la conversation visible.
+  Ces marqueurs sont STRICTEMENT INTERNES et INVISIBLES.
+  RÈGLE ABSOLUE : n'écris JAMAIS le mot "Marqueur", "marqueur interne", "à ne pas afficher" ou toute explication sur ces marqueurs dans ta réponse.
+  Le marqueur doit apparaître tel quel à la fin du texte, sans aucun commentaire autour.
+  Exemple CORRECT : "Bien sûr ! Voici comment réserver votre lot...\n[PROSPECT|statut:chaud|interet:standard|budget:echelonne]"
+  Exemple INCORRECT : "Bien sûr ! *[Marqueur interne - à ne pas afficher]* [PROSPECT...]"
 
 fallback_message: "Desolee, je n'ai pas bien compris votre message. Pourriez-vous reformuler ? Je suis NAYA, conseillere d'AVENT GROUPE, et je suis la pour vous accompagner dans votre projet a la CITE PRESIDENTIELLE de Yamoussoukro !"
 error_message: "Je rencontre un petit souci technique en ce moment. Veuillez reessayer dans quelques instants ou contactez directement notre equipe au (+225) 27 22 40 71 60. Merci de votre patience !"

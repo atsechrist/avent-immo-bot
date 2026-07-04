@@ -83,7 +83,19 @@ def nettoyer_marqueurs(texte: str) -> str:
     """Supprime les marqueurs internes avant d'envoyer au client."""
     texte = SOUSCRIPTION_RE.sub("", texte)
     texte = PROSPECT_RE.sub("", texte)
-    return texte.strip()
+    # Supprime les lignes contenant des instructions internes que Mistral génère parfois
+    lignes = texte.splitlines()
+    lignes_propres = []
+    for ligne in lignes:
+        l = ligne.strip()
+        if re.search(r'\[Marqueur', l, re.IGNORECASE):
+            continue
+        if re.search(r'marqueur interne|à ne pas afficher|ne pas afficher|internal marker', l, re.IGNORECASE):
+            continue
+        if re.search(r'si le client confirm|si le prospect confirm', l, re.IGNORECASE) and l.startswith("*"):
+            continue
+        lignes_propres.append(ligne)
+    return "\n".join(lignes_propres).strip()
 
 
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
