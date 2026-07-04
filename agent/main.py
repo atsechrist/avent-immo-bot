@@ -351,7 +351,7 @@ async def admin_supprimer_souscription(request: Request, sid: int):
 async def admin_conversation(request: Request, telefono: str):
     require_admin(request)
     try:
-        messages = await obtenir_historial_complet(telefono)
+        messages = await obtener_historial_complet(telefono)
         prospect = await obtenir_prospect(telefono)
         bot_actif = await est_bot_actif(telefono)
         return HTMLResponse(render_conversation(telefono, messages, prospect, bot_actif))
