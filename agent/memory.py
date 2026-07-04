@@ -74,6 +74,14 @@ class Souscription(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class BotConfig(Base):
+    """Clé-valeur pour stocker le system prompt et autres configs en ligne."""
+    __tablename__ = "bot_config"
+
+    cle: Mapped[str] = mapped_column(String(100), primary_key=True)
+    valeur: Mapped[str] = mapped_column(Text, nullable=True)
+
+
 # ─── Initialisation DB ────────────────────────────────────────────────────────
 
 async def inicializar_db():
@@ -89,6 +97,26 @@ async def inicializar_db():
                 await conn.execute(text(col_sql))
         except Exception:
             pass  # colonne déjà présente
+
+
+# ─── Config (system prompt en ligne) ─────────────────────────────────────────
+
+async def obtener_config(cle: str) -> str | None:
+    async with async_session() as session:
+        result = await session.execute(select(BotConfig).where(BotConfig.cle == cle))
+        cfg = result.scalar_one_or_none()
+        return cfg.valeur if cfg else None
+
+
+async def guardar_config(cle: str, valeur: str):
+    async with async_session() as session:
+        result = await session.execute(select(BotConfig).where(BotConfig.cle == cle))
+        cfg = result.scalar_one_or_none()
+        if cfg:
+            cfg.valeur = valeur
+        else:
+            session.add(BotConfig(cle=cle, valeur=valeur))
+        await session.commit()
 
 
 # ─── Messages ─────────────────────────────────────────────────────────────────
