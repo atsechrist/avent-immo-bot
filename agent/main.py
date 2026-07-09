@@ -750,6 +750,21 @@ def render_conversation(telefono: str, messages: list, prospect: dict | None, bo
         elif content.startswith("[Message vocal]"):
             transcription = content[len("[Message vocal]"):].strip()
             contenu_html = f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="font-size:16px">🎤</span><em style="font-size:11px;opacity:.8">Message vocal</em></div><div>{transcription.replace(chr(10), "<br>")}</div>'
+        # Détection image client
+        elif content.startswith("[Image envoyée]"):
+            reste = content[len("[Image envoyée]"):].strip()
+            import re as _re
+            url_match = _re.search(r'\(URL:\s*(https?://\S+)\)', reste)
+            caption = _re.sub(r'\(URL:\s*https?://\S+\)', '', reste).strip(" \n—-")
+            if url_match:
+                img_url = url_match.group(1).rstrip(')')
+                contenu_html = (
+                    f'<div style="margin-bottom:4px"><span style="font-size:14px">🖼</span> <em style="font-size:11px;opacity:.8">Image</em></div>'
+                    f'<img src="{img_url}" style="max-width:240px;max-height:300px;border-radius:8px;display:block;margin-bottom:4px">'
+                    + (f'<div style="font-size:12px;opacity:.8">{caption}</div>' if caption else '')
+                )
+            else:
+                contenu_html = f'<span style="font-size:14px">🖼</span> {reste}'
         # Détection réponse audio NAYA
         elif content.startswith("[🔊AUDIO]"):
             reste = content[len("[🔊AUDIO]"):]
