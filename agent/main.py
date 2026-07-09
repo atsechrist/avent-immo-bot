@@ -194,9 +194,22 @@ async def webhook_handler(request: Request):
                 if not texto_client:
                     texto_client = "[Le client a envoyé une image]"
 
-            elif msg.tipo == "video":
+            elif msg.tipo == "video" and msg.media_id:
                 caption = msg.texto or ""
-                texto_client = f"[Vidéo envoyée]{' — ' + caption if caption else ''}"
+                if isinstance(proveedor, ProveedorMeta):
+                    video_bytes, mime = await proveedor.telecharger_media(msg.media_id)
+                    if video_bytes:
+                        from agent.cloudinary_upload import uploader_audio as uploader_fichier
+                        ext = "mp4"
+                        vid_url = await uploader_fichier(video_bytes, f"vid_{uuid.uuid4().hex[:8]}.{ext}")
+                        if vid_url:
+                            texto_client = f"[Vidéo envoyée] (URL: {vid_url}){' — ' + caption if caption else ''}"
+                        else:
+                            texto_client = f"[Vidéo envoyée]{' — ' + caption if caption else ''}"
+                    else:
+                        texto_client = f"[Vidéo envoyée]{' — ' + caption if caption else ''}"
+                else:
+                    texto_client = f"[Vidéo envoyée]{' — ' + caption if caption else ''}"
 
             elif msg.tipo == "document":
                 texto_client = f"[Document envoyé]{' — ' + msg.texto if msg.texto else ''}"
@@ -750,6 +763,21 @@ def render_conversation(telefono: str, messages: list, prospect: dict | None, bo
         elif content.startswith("[Message vocal]"):
             transcription = content[len("[Message vocal]"):].strip()
             contenu_html = f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="font-size:16px">🎤</span><em style="font-size:11px;opacity:.8">Message vocal</em></div><div>{transcription.replace(chr(10), "<br>")}</div>'
+        # Détection vidéo client
+        elif content.startswith("[Vidéo envoyée]"):
+            reste = content[len("[Vidéo envoyée]"):].strip()
+            import re as _re
+            url_match = _re.search(r'\(URL:\s*(https?://\S+)\)', reste)
+            caption = _re.sub(r'\(URL:\s*https?://\S+\)', '', reste).strip(" \n—-")
+            if url_match:
+                vid_url = url_match.group(1).rstrip(')')
+                contenu_html = (
+                    f'<div style="margin-bottom:4px"><span style="font-size:14px">🎬</span> <em style="font-size:11px;opacity:.8">Vidéo</em></div>'
+                    f'<video controls src="{vid_url}" style="max-width:240px;max-height:300px;border-radius:8px;display:block;margin-bottom:4px"></video>'
+                    + (f'<div style="font-size:12px;opacity:.8">{caption}</div>' if caption else '')
+                )
+            else:
+                contenu_html = f'<span style="font-size:14px">🎬</span> Vidéo envoyée{" — " + reste if reste else ""}'
         # Détection image client
         elif content.startswith("[Image envoyée]"):
             reste = content[len("[Image envoyée]"):].strip()
