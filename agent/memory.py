@@ -242,12 +242,21 @@ async def obtenir_tous_prospects() -> list[dict]:
 
 async def obtenir_stats_prospects() -> dict:
     async with async_session() as session:
-        total = (await session.execute(func.count(Prospect.id))).scalar() or 0
+        # Ne compter que les prospects ayant au moins 1 message
+        sous_requete = select(Mensaje.telefono).distinct()
+        avec_messages = select(func.count(Prospect.id)).where(
+            Prospect.telefono.in_(sous_requete)
+        )
+        total = (await session.execute(avec_messages)).scalar() or 0
         chauds = (await session.execute(
-            select(func.count(Prospect.id)).where(Prospect.statut == "chaud")
+            select(func.count(Prospect.id))
+            .where(Prospect.statut == "chaud")
+            .where(Prospect.telefono.in_(sous_requete))
         )).scalar() or 0
         convertis = (await session.execute(
-            select(func.count(Prospect.id)).where(Prospect.statut == "converti")
+            select(func.count(Prospect.id))
+            .where(Prospect.statut == "converti")
+            .where(Prospect.telefono.in_(sous_requete))
         )).scalar() or 0
         return {"total": total, "chauds": chauds, "convertis": convertis}
 
