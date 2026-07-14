@@ -250,7 +250,7 @@ async def webhook_handler(request: Request):
                         nom = f"naya_{uuid.uuid4().hex[:8]}.mp3"
                         audio_url_envoye = await uploader_audio(audio_resp, nom)
                         if audio_url_envoye:
-                            envoi_vocal_ok = await proveedor.enviar_audio(msg.telefono, audio_url_envoye)
+                            envoi_vocal_ok = await proveedor.enviar_audio(msg.telefono, audio_url_envoye, audio_resp)
                             if not envoi_vocal_ok:
                                 logger.error(f"enviar_audio échoué pour {msg.telefono}")
                         else:

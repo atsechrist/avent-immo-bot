@@ -146,21 +146,58 @@ class ProveedorMeta(ProveedorWhatsApp):
                 logger.error(f"Erreur Meta API: {r.status_code} — {r.text}")
             return r.status_code == 200
 
-    async def enviar_audio(self, telefono: str, audio_url: str) -> bool:
-        """Envoie un message audio via une URL publique (Cloudinary)."""
+    async def _subir_audio_whatsapp(self, audio_bytes: bytes) -> str | None:
+        """Upload audio sur WhatsApp Media API. Retourne le media_id ou None."""
+        url = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/media"
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.post(
+                    url,
+                    headers=headers,
+                    data={"messaging_product": "whatsapp"},
+                    files={"file": ("naya_tts.mp3", audio_bytes, "audio/mpeg")},
+                )
+                if r.status_code == 200:
+                    media_id = r.json().get("id")
+                    logger.info(f"Audio uploadé WhatsApp Media: {media_id}")
+                    return media_id
+                logger.error(f"Erreur upload WhatsApp Media: {r.status_code} {r.text[:200]}")
+                return None
+        except Exception as e:
+            logger.error(f"Exception upload WhatsApp Media: {e}")
+            return None
+
+    async def enviar_audio(self, telefono: str, audio_url: str, audio_bytes: bytes | None = None) -> bool:
+        """Envoie un message audio. Préfère WhatsApp Media (id) au lien Cloudinary."""
         if not self.access_token or not self.phone_number_id:
             return False
+
+        # Upload sur WhatsApp Media pour affichage natif (sans label "Audio")
+        media_id = None
+        if audio_bytes:
+            media_id = await self._subir_audio_whatsapp(audio_bytes)
+
         url = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/messages"
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
         }
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": telefono,
-            "type": "audio",
-            "audio": {"link": audio_url},
-        }
+        if media_id:
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": telefono,
+                "type": "audio",
+                "audio": {"id": media_id},
+            }
+        else:
+            # Fallback via URL Cloudinary
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": telefono,
+                "type": "audio",
+                "audio": {"link": audio_url},
+            }
         async with httpx.AsyncClient() as client:
             r = await client.post(url, json=payload, headers=headers)
             if r.status_code != 200:
