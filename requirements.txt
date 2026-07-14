@@ -10,3 +10,4 @@ asyncpg>=0.29.0
 python-multipart>=0.0.6
 edge-tts>=6.1.9
 gTTS>=2.5.1
+pydub>=0.25.1

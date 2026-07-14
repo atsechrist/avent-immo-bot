@@ -146,8 +146,30 @@ class ProveedorMeta(ProveedorWhatsApp):
                 logger.error(f"Erreur Meta API: {r.status_code} — {r.text}")
             return r.status_code == 200
 
+    def _mp3_vers_ogg_opus(self, mp3_bytes: bytes) -> bytes | None:
+        """Convertit MP3 en OGG/Opus pour affichage en note vocale WhatsApp (sans label 'Audio')."""
+        try:
+            import io
+            from pydub import AudioSegment
+            audio = AudioSegment.from_mp3(io.BytesIO(mp3_bytes))
+            output = io.BytesIO()
+            audio.export(output, format="ogg", codec="libopus", parameters=["-b:a", "32k"])
+            ogg_bytes = output.getvalue()
+            logger.info(f"Conversion OGG/Opus réussie ({len(ogg_bytes)} octets)")
+            return ogg_bytes
+        except Exception as e:
+            logger.warning(f"Conversion OGG échouée, MP3 conservé: {e}")
+            return None
+
     async def _subir_audio_whatsapp(self, audio_bytes: bytes) -> str | None:
         """Upload audio sur WhatsApp Media API. Retourne le media_id ou None."""
+        # Convertir en OGG/Opus → s'affiche comme note vocale, pas de label "Audio"
+        ogg_bytes = self._mp3_vers_ogg_opus(audio_bytes)
+        if ogg_bytes:
+            filename, mime_type, data = "naya_tts.ogg", "audio/ogg; codecs=opus", ogg_bytes
+        else:
+            filename, mime_type, data = "naya_tts.mp3", "audio/mpeg", audio_bytes
+
         url = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/media"
         headers = {"Authorization": f"Bearer {self.access_token}"}
         try:
@@ -156,11 +178,11 @@ class ProveedorMeta(ProveedorWhatsApp):
                     url,
                     headers=headers,
                     data={"messaging_product": "whatsapp"},
-                    files={"file": ("naya_tts.mp3", audio_bytes, "audio/mpeg")},
+                    files={"file": (filename, data, mime_type)},
                 )
                 if r.status_code == 200:
                     media_id = r.json().get("id")
-                    logger.info(f"Audio uploadé WhatsApp Media: {media_id}")
+                    logger.info(f"Audio uploadé WhatsApp Media ({mime_type}): {media_id}")
                     return media_id
                 logger.error(f"Erreur upload WhatsApp Media: {r.status_code} {r.text[:200]}")
                 return None
