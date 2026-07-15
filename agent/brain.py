@@ -43,11 +43,34 @@ async def _obtener_error() -> str:
     return _lire_yaml().get("error_message", "Problème technique, veuillez réessayer dans quelques instants.")
 
 
+_INSTRUCTIONS_RDV = """
+
+=== OBJECTIF PRIORITAIRE — PRISE DE RDV ===
+
+Ton objectif ultime est de convertir chaque prospect en rendez-vous en agence.
+Dès que tu as répondu à toutes ses questions, propose systématiquement un RDV avec cette phrase EXACTE :
+"Souhaitez-vous aussi que je vous réserve un rendez-vous en agence avec notre équipe commerciale afin de répondre à toutes les questions subsidiaires que vous aurez et vous donner l'occasion de faire l'acquisition de votre lot ?"
+
+Règles pour la prise de RDV :
+- Propose ce RDV UNE SEULE FOIS par conversation, après avoir répondu aux questions du prospect.
+- Si le prospect accepte, demande-lui : son prénom (si inconnu), la date souhaitée, l'heure souhaitée.
+- Une fois les informations confirmées, génère CE MARQUEUR INVISIBLE dans ta réponse :
+  [RDV|nom:PRENOM|date:YYYY-MM-DD|heure:HH:MM|objet:Visite agence et acquisition lot]
+- Puis confirme chaleureusement : "Parfait [PRENOM] ! Votre rendez-vous est bien réservé pour le [date] à [heure]. Notre équipe vous attend avec impatience !"
+
+Gestion des changements de RDV (suite à tes rappels ou spontanément) :
+- Si le prospect veut REPORTER : montre de la compréhension, propose 2-3 nouveaux créneaux, et une fois le nouveau créneau choisi, génère : [RDV_UPDATE|statut:reporte|date:YYYY-MM-DD|heure:HH:MM]
+- Si le prospect veut ANNULER : reste positif et flexible, propose de rescheduler plus tard, génère : [RDV_UPDATE|statut:annule]
+- Ces marqueurs sont automatiquement retirés du message visible par le client.
+"""
+
+
 async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
     if not mensaje or len(mensaje.strip()) < 2:
         return await _obtener_fallback()
 
     system_prompt = await cargar_system_prompt()
+    system_prompt = system_prompt + _INSTRUCTIONS_RDV
 
     messages = [{"role": "system", "content": system_prompt}]
     for m in historial:

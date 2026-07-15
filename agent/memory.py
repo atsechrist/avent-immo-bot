@@ -74,6 +74,25 @@ class Souscription(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class Rdv(Base):
+    """Rendez-vous pris via NAYA."""
+    __tablename__ = "rdvs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    telephone: Mapped[str] = mapped_column(String(50), index=True)
+    nom: Mapped[str] = mapped_column(String(200), default="")
+    date_rdv: Mapped[str] = mapped_column(String(20))   # YYYY-MM-DD
+    heure_rdv: Mapped[str] = mapped_column(String(10))  # HH:MM
+    objet: Mapped[str] = mapped_column(String(500), default="")
+    statut: Mapped[str] = mapped_column(String(30), default="confirme")  # confirme / reporte / annule
+    google_event_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    email_equipe_envoye: Mapped[bool] = mapped_column(Boolean, default=False)
+    rappel_48h_envoye: Mapped[bool] = mapped_column(Boolean, default=False)
+    rappel_24h_envoye: Mapped[bool] = mapped_column(Boolean, default=False)
+    rappel_dday_envoye: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class BotConfig(Base):
     """Clé-valeur pour stocker le system prompt et autres configs en ligne."""
     __tablename__ = "bot_config"
@@ -371,6 +390,148 @@ async def supprimer_souscription(souscription_id: int):
 
 
 # ─── Stats globales dashboard ─────────────────────────────────────────────────
+
+# ─── RDVs ─────────────────────────────────────────────────────────────────────
+
+async def enregistrer_rdv(
+    telephone: str, nom: str, date_rdv: str, heure_rdv: str,
+    objet: str = "", google_event_id: str | None = None
+) -> int:
+    """Enregistre un RDV et retourne son id."""
+    async with async_session() as session:
+        rdv = Rdv(
+            telephone=telephone, nom=nom, date_rdv=date_rdv,
+            heure_rdv=heure_rdv, objet=objet, google_event_id=google_event_id,
+        )
+        session.add(rdv)
+        await session.commit()
+        await session.refresh(rdv)
+        return rdv.id
+
+
+async def mettre_a_jour_statut_rdv(telephone: str, statut: str, date_rdv: str = "", heure_rdv: str = ""):
+    """Met à jour le statut du dernier RDV confirmé d'un prospect (reporte / annule)."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Rdv)
+            .where(Rdv.telephone == telephone)
+            .where(Rdv.statut == "confirme")
+            .order_by(Rdv.created_at.desc())
+            .limit(1)
+        )
+        rdv = result.scalar_one_or_none()
+        if rdv:
+            rdv.statut = statut
+            if date_rdv:
+                rdv.date_rdv = date_rdv
+            if heure_rdv:
+                rdv.heure_rdv = heure_rdv
+            await session.commit()
+
+
+async def marquer_email_equipe(rdv_id: int):
+    async with async_session() as session:
+        result = await session.execute(select(Rdv).where(Rdv.id == rdv_id))
+        rdv = result.scalar_one_or_none()
+        if rdv:
+            rdv.email_equipe_envoye = True
+            await session.commit()
+
+
+async def marquer_rappel_48h(rdv_id: int):
+    async with async_session() as session:
+        result = await session.execute(select(Rdv).where(Rdv.id == rdv_id))
+        rdv = result.scalar_one_or_none()
+        if rdv:
+            rdv.rappel_48h_envoye = True
+            await session.commit()
+
+
+async def marquer_rappel_24h(rdv_id: int):
+    async with async_session() as session:
+        result = await session.execute(select(Rdv).where(Rdv.id == rdv_id))
+        rdv = result.scalar_one_or_none()
+        if rdv:
+            rdv.rappel_24h_envoye = True
+            await session.commit()
+
+
+async def marquer_rappel_dday(rdv_id: int):
+    async with async_session() as session:
+        result = await session.execute(select(Rdv).where(Rdv.id == rdv_id))
+        rdv = result.scalar_one_or_none()
+        if rdv:
+            rdv.rappel_dday_envoye = True
+            await session.commit()
+
+
+def _rdv_to_dict(rdv: Rdv) -> dict:
+    return {
+        "id": rdv.id, "telephone": rdv.telephone, "nom": rdv.nom,
+        "date_rdv": rdv.date_rdv, "heure_rdv": rdv.heure_rdv,
+        "objet": rdv.objet, "statut": rdv.statut,
+        "google_event_id": rdv.google_event_id,
+        "rappel_48h_envoye": rdv.rappel_48h_envoye,
+        "rappel_24h_envoye": rdv.rappel_24h_envoye,
+        "rappel_dday_envoye": rdv.rappel_dday_envoye,
+    }
+
+
+async def obtenir_rdvs_proches(heures_min: float, heures_max: float) -> list[dict]:
+    """Retourne les RDVs confirmés dont le délai avant RDV est dans [heures_min, heures_max]."""
+    from datetime import timedelta
+    now = datetime.utcnow()
+    async with async_session() as session:
+        result = await session.execute(
+            select(Rdv).where(Rdv.statut == "confirme")
+        )
+        rdvs = result.scalars().all()
+    out = []
+    for rdv in rdvs:
+        try:
+            rdv_dt = datetime.strptime(f"{rdv.date_rdv} {rdv.heure_rdv}", "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        delta_h = (rdv_dt - now).total_seconds() / 3600
+        if heures_min <= delta_h <= heures_max:
+            out.append(_rdv_to_dict(rdv))
+    return out
+
+
+async def obtenir_rdvs_du_jour() -> list[dict]:
+    """Retourne les RDVs confirmés dont la date est aujourd'hui (UTC)."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    async with async_session() as session:
+        result = await session.execute(
+            select(Rdv)
+            .where(Rdv.statut == "confirme")
+            .where(Rdv.date_rdv == today)
+            .order_by(Rdv.heure_rdv)
+        )
+        return [_rdv_to_dict(r) for r in result.scalars().all()]
+
+
+async def obtenir_rdv_par_telephone(telephone: str) -> dict | None:
+    """Retourne le dernier RDV confirmé pour un prospect."""
+    async with async_session() as session:
+        result = await session.execute(
+            select(Rdv)
+            .where(Rdv.telephone == telephone)
+            .where(Rdv.statut == "confirme")
+            .order_by(Rdv.created_at.desc())
+            .limit(1)
+        )
+        rdv = result.scalar_one_or_none()
+        return _rdv_to_dict(rdv) if rdv else None
+
+
+async def obtenir_tous_rdvs() -> list[dict]:
+    async with async_session() as session:
+        result = await session.execute(
+            select(Rdv).order_by(Rdv.date_rdv.desc(), Rdv.heure_rdv.desc())
+        )
+        return [_rdv_to_dict(r) for r in result.scalars().all()]
+
 
 async def obtenir_conversations_recentes(limite: int = 30) -> list[dict]:
     """Retourne les numéros ayant eu une activité récente, avec dernier message."""

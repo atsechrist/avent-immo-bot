@@ -18,6 +18,8 @@ from agent.memory import (
     guardar_souscription, obtenir_toutes_souscriptions, obtenir_souscription,
     mettre_a_jour_statut_paiement, obtenir_stats_souscriptions, supprimer_souscription,
     obtenir_conversations_recentes, est_bot_actif, pausar_bot, reanudar_bot,
+    enregistrer_rdv, mettre_a_jour_statut_rdv, marquer_email_equipe,
+    obtenir_tous_rdvs, obtenir_rdv_par_telephone,
 )
 from agent.providers import obtener_proveedor
 from agent.providers.meta import ProveedorMeta
@@ -81,6 +83,20 @@ def extraire_mise_a_jour_prospect(texte: str) -> dict | None:
 
 
 RDV_RE = re.compile(r"\[RDV\|([^\]]+)\]", re.IGNORECASE)
+RDV_UPDATE_RE = re.compile(r"\[RDV_UPDATE\|([^\]]+)\]", re.IGNORECASE)
+
+def extraire_rdv_update(texte: str) -> dict | None:
+    """Extrait [RDV_UPDATE|statut:annule] ou [RDV_UPDATE|statut:reporte|date:...|heure:...]."""
+    m = RDV_UPDATE_RE.search(texte)
+    if not m:
+        return None
+    data = {}
+    for part in m.group(1).split("|"):
+        if ":" in part:
+            k, _, v = part.partition(":")
+            data[k.strip()] = v.strip()
+    return data if data else None
+
 
 def extraire_rdv(texte: str) -> dict | None:
     """Extrait les champs d'un marqueur [RDV|nom:X|date:YYYY-MM-DD|heure:HH:MM|objet:Z]."""
@@ -100,6 +116,7 @@ def nettoyer_marqueurs(texte: str) -> str:
     texte = SOUSCRIPTION_RE.sub("", texte)
     texte = PROSPECT_RE.sub("", texte)
     texte = RDV_RE.sub("", texte)
+    texte = RDV_UPDATE_RE.sub("", texte)
     # Supprime les directives de ton/style entre *[...] que Mistral génère parfois
     texte = re.sub(r"\*\[[^\]]*\]\*", "", texte)
     # Supprime tous les astérisques markdown (gras, italique)
@@ -124,6 +141,9 @@ def nettoyer_marqueurs(texte: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await inicializar_db()
+    from agent.reminders import boucle_rappels
+    import asyncio
+    asyncio.create_task(boucle_rappels())
     logger.info(f"NAYA — Avent IMMO Bot démarré sur le port {PORT}")
     yield
 
@@ -287,10 +307,59 @@ async def webhook_handler(request: Request):
                     heure=rdv_data.get("heure", ""),
                     objet=rdv_data.get("objet", "Visite agence / Closing"),
                 )
+                event_id = rdv_result.get("event_id") if rdv_result.get("success") else None
                 if rdv_result.get("success"):
                     logger.info(f"📅 RDV Google Calendar créé pour {msg.telefono}: {rdv_data}")
                 else:
                     logger.error(f"Échec création RDV Calendar: {rdv_result.get('erreur')}")
+                # Enregistrer en DB + notifier l'équipe par email
+                prospect_info = await obtenir_prospect(msg.telefono)
+                nom_rdv = rdv_data.get("nom", "") or (prospect_info or {}).get("nom", "Client")
+                rdv_id = await enregistrer_rdv(
+                    telephone=msg.telefono,
+                    nom=nom_rdv,
+                    date_rdv=rdv_data.get("date", ""),
+                    heure_rdv=rdv_data.get("heure", ""),
+                    objet=rdv_data.get("objet", "Visite agence et acquisition lot"),
+                    google_event_id=event_id,
+                )
+                from agent.email_notif import envoyer_email_nouveau_rdv
+                email_ok = await envoyer_email_nouveau_rdv(
+                    nom=nom_rdv,
+                    telephone=msg.telefono,
+                    date_rdv=rdv_data.get("date", ""),
+                    heure_rdv=rdv_data.get("heure", ""),
+                    objet=rdv_data.get("objet", "Visite agence et acquisition lot"),
+                )
+                if email_ok:
+                    await marquer_email_equipe(rdv_id)
+                logger.info(f"📧 Email RDV {'envoyé' if email_ok else 'ÉCHEC'} pour {msg.telefono}")
+
+            # ── Détection changement de statut RDV ───────────────────────────
+            rdv_update = extraire_rdv_update(respuesta_brute)
+            if rdv_update:
+                statut_update = rdv_update.get("statut", "")
+                rdv_existant = await obtenir_rdv_par_telephone(msg.telefono)
+                if rdv_existant and statut_update in ("reporte", "annule"):
+                    nouveau_date = rdv_update.get("date", "")
+                    nouveau_heure = rdv_update.get("heure", "")
+                    await mettre_a_jour_statut_rdv(
+                        telephone=msg.telefono,
+                        statut=statut_update,
+                        date_rdv=nouveau_date,
+                        heure_rdv=nouveau_heure,
+                    )
+                    from agent.email_notif import envoyer_email_statut_rdv
+                    nouveau_creneau = f"{nouveau_date} à {nouveau_heure}" if nouveau_date else ""
+                    await envoyer_email_statut_rdv(
+                        nom=rdv_existant.get("nom", "Client"),
+                        telephone=msg.telefono,
+                        date_rdv=rdv_existant.get("date_rdv", ""),
+                        heure_rdv=rdv_existant.get("heure_rdv", ""),
+                        statut=statut_update,
+                        nouveau_rdv=nouveau_creneau,
+                    )
+                    logger.info(f"🔄 RDV {statut_update} pour {msg.telefono} — email équipe envoyé")
 
             respuesta = nettoyer_marqueurs(respuesta_brute)
 
@@ -537,6 +606,15 @@ async def admin_knowledge_save(
     return RedirectResponse("/admin/knowledge?msg=Base+de+connaissance+sauvegardée+en+ligne", status_code=302)
 
 
+# ─── Admin — RDVs ─────────────────────────────────────────────────────────────
+
+@app.get("/admin/rdvs", response_class=HTMLResponse)
+async def admin_rdvs(request: Request):
+    require_admin(request)
+    rdvs = await obtenir_tous_rdvs()
+    return HTMLResponse(render_rdvs(rdvs))
+
+
 # ─── Campagne (relance prospects) ─────────────────────────────────────────────
 
 @app.get("/campagne/contacts")
@@ -624,6 +702,7 @@ def nav(active: str = "") -> str:
         ("/admin", "🏠 Dashboard"),
         ("/admin/prospects", "👥 Prospects"),
         ("/admin/souscriptions", "💰 Souscriptions"),
+        ("/admin/rdvs", "📅 RDVs"),
         ("/admin/knowledge", "📚 Knowledge"),
         ("/admin/logout", "🚪 Déconnexion"),
     ]
@@ -926,6 +1005,42 @@ def render_conversation(telefono: str, messages: list, prospect: dict | None, bo
       <div style="flex:1;overflow-y:auto;max-height:70vh;padding:8px;background:#f9f9f9;border-radius:8px">
         {msgs_html or '<p style="text-align:center;color:#7f8c8d;padding:20px">Aucun message</p>'}
       </div>
+    </div>
+  </div>
+</div></body></html>"""
+
+
+def render_rdvs(rdvs: list) -> str:
+    rows = ""
+    for r in rdvs:
+        badge_color = {"confirme": "#27ae60", "reporte": "#e67e22", "annule": "#e74c3c"}.get(r["statut"], "#7f8c8d")
+        badge = f'<span class="badge" style="background:{badge_color}22;color:{badge_color}">{r["statut"]}</span>'
+        rows += f"""<tr>
+          <td>{r['id']}</td>
+          <td><a href="/admin/conversation/{r['telefono']}" style="color:#1a1a2e;font-weight:600">{r['telefono']}</a></td>
+          <td>{r['nom']}</td>
+          <td>{r['date_rdv']}</td>
+          <td>{r['heure_rdv']}</td>
+          <td>{r['objet']}</td>
+          <td>{badge}</td>
+          <td style="font-size:11px">
+            {'✅' if r['rappel_48h_envoye'] else '⏳'} 48H &nbsp;
+            {'✅' if r['rappel_24h_envoye'] else '⏳'} 24H &nbsp;
+            {'✅' if r['rappel_dday_envoye'] else '⏳'} J-Jour
+          </td>
+        </tr>"""
+    return f"""<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RDVs — NAYA Admin</title>{CSS_BASE}</head><body>
+{nav()}
+<div class="container">
+  <div class="card">
+    <h2>📅 Rendez-vous ({len(rdvs)})</h2>
+    <div style="overflow-x:auto">
+    <table>
+      <tr><th>#</th><th>Téléphone</th><th>Nom</th><th>Date</th><th>Heure</th><th>Objet</th><th>Statut</th><th>Rappels</th></tr>
+      {rows or '<tr><td colspan="8" style="text-align:center;color:#7f8c8d;padding:20px">Aucun RDV enregistré</td></tr>'}
+    </table>
     </div>
   </div>
 </div></body></html>"""
