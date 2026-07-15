@@ -5,7 +5,7 @@ import httpx
 logger = logging.getLogger("avent-immo")
 
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
-NOTIF_EMAIL    = os.getenv("NOTIF_EMAIL", "atsechrist@gmail.com")
+NOTIF_EMAIL    = os.getenv("NOTIF_EMAIL", "lesstudiosavent@gmail.com")
 FROM_EMAIL     = "NAYA — AVENT GROUPE <onboarding@resend.dev>"
 
 
