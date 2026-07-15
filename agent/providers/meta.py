@@ -190,6 +190,54 @@ class ProveedorMeta(ProveedorWhatsApp):
             logger.error(f"Exception upload WhatsApp Media: {e}")
             return None
 
+    async def enviar_imagen(self, telefono: str, image_url: str, caption: str = "") -> bool:
+        """Envoie une image via Meta WhatsApp Cloud API."""
+        if not self.access_token or not self.phone_number_id:
+            return False
+        url = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        img_payload: dict = {"link": image_url}
+        if caption:
+            img_payload["caption"] = caption
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": telefono,
+            "type": "image",
+            "image": img_payload,
+        }
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, json=payload, headers=headers)
+            if r.status_code != 200:
+                logger.error(f"Erreur envoi image Meta: {r.status_code} — {r.text}")
+            return r.status_code == 200
+
+    async def enviar_video(self, telefono: str, video_url: str, caption: str = "") -> bool:
+        """Envoie une vidéo via Meta WhatsApp Cloud API."""
+        if not self.access_token or not self.phone_number_id:
+            return False
+        url = f"https://graph.facebook.com/{self.api_version}/{self.phone_number_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        vid_payload: dict = {"link": video_url}
+        if caption:
+            vid_payload["caption"] = caption
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": telefono,
+            "type": "video",
+            "video": vid_payload,
+        }
+        async with httpx.AsyncClient() as client:
+            r = await client.post(url, json=payload, headers=headers)
+            if r.status_code != 200:
+                logger.error(f"Erreur envoi video Meta: {r.status_code} — {r.text}")
+            return r.status_code == 200
+
     async def enviar_audio(self, telefono: str, audio_url: str, audio_bytes: bytes | None = None) -> bool:
         """Envoie un message audio. Préfère WhatsApp Media (id) au lien Cloudinary."""
         if not self.access_token or not self.phone_number_id:

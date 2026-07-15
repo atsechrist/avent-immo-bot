@@ -239,6 +239,34 @@ async def webhook_handler(request: Request):
             logger.info(f"Message de {msg.telefono} ({msg.tipo}): {texto_client[:100]}")
 
             historial = await obtener_historial(msg.telefono)
+
+            # ── Message de bienvenue au premier contact ───────────────────────
+            if not historial:
+                _welcome_image = os.getenv("WELCOME_IMAGE_URL", "")
+                _welcome_video = os.getenv("WELCOME_VIDEO_URL", "")
+                _welcome_text = (
+                    "Bonjour et bienvenue chez AVENT GROUPE, votre partenaire immobilier agréé !\n\n"
+                    "YAMOUSSOUKRO c'est maintenant !\n"
+                    "Devenez PROPRIÉTAIRE aux abords de la ZONE ADMINISTRATIVE ET POLITIQUE, "
+                    "près du futur palais Présidentiel.\n\n"
+                    "👉🏽 Zone d'habitation Haut Standing\n"
+                    "👉🏽 Lots de 500 M²\n"
+                    "👉🏽 Titre foncier disponible\n"
+                    "👉🏽 Livré avec ACD ‼️\n\n"
+                    "Prix: 3 500 000 FCFA/LOT payable en 6 mois, avec 50% à la réservation.\n"
+                    "  • -10% pour les achats en CASH (soit 3 150 000 FCFA)\n\n"
+                    "Je suis NAYA et j'aurais le plaisir de vous accompagner tout au long "
+                    "de votre projet d'acquisition.\n\nAvez-vous des questions ?"
+                )
+                if isinstance(proveedor, ProveedorMeta):
+                    if _welcome_image:
+                        await proveedor.enviar_imagen(msg.telefono, _welcome_image)
+                    if _welcome_video:
+                        await proveedor.enviar_video(msg.telefono, _welcome_video)
+                await proveedor.enviar_mensaje(msg.telefono, _welcome_text)
+                await guardar_mensaje(msg.telefono, "assistant", _welcome_text)
+                logger.info(f"Message de bienvenue envoyé à {msg.telefono}")
+
             respuesta_brute = await generar_respuesta(texto_client, historial)
 
             souscription_data = extraire_souscription(respuesta_brute)
