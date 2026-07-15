@@ -9,6 +9,7 @@ from fastapi.responses import PlainTextResponse, HTMLResponse, RedirectResponse
 from dotenv import load_dotenv
 
 from agent.brain import generar_respuesta
+from agent.calendar_tool import creer_rdv
 from agent.memory import (
     inicializar_db, guardar_mensaje, obtener_historial,
     limpiar_historial, obtener_historial_complet,
@@ -79,10 +80,26 @@ def extraire_mise_a_jour_prospect(texte: str) -> dict | None:
     return data if data else None
 
 
+RDV_RE = re.compile(r"\[RDV\|([^\]]+)\]", re.IGNORECASE)
+
+def extraire_rdv(texte: str) -> dict | None:
+    """Extrait les champs d'un marqueur [RDV|nom:X|date:YYYY-MM-DD|heure:HH:MM|objet:Z]."""
+    m = RDV_RE.search(texte)
+    if not m:
+        return None
+    data = {}
+    for part in m.group(1).split("|"):
+        if ":" in part:
+            k, _, v = part.partition(":")
+            data[k.strip()] = v.strip()
+    return data if data else None
+
+
 def nettoyer_marqueurs(texte: str) -> str:
     """Supprime les marqueurs internes avant d'envoyer au client."""
     texte = SOUSCRIPTION_RE.sub("", texte)
     texte = PROSPECT_RE.sub("", texte)
+    texte = RDV_RE.sub("", texte)
     # Supprime les directives de ton/style entre *[...] que Mistral génère parfois
     texte = re.sub(r"\*\[[^\]]*\]\*", "", texte)
     # Supprime tous les astérisques markdown (gras, italique)
@@ -232,6 +249,20 @@ async def webhook_handler(request: Request):
             prospect_data = extraire_mise_a_jour_prospect(respuesta_brute)
             if prospect_data:
                 await mettre_a_jour_prospect(msg.telefono, **prospect_data)
+
+            rdv_data = extraire_rdv(respuesta_brute)
+            if rdv_data:
+                rdv_result = await creer_rdv(
+                    nom=rdv_data.get("nom", "Client"),
+                    telephone=msg.telefono,
+                    date=rdv_data.get("date", ""),
+                    heure=rdv_data.get("heure", ""),
+                    objet=rdv_data.get("objet", "Visite agence / Closing"),
+                )
+                if rdv_result.get("success"):
+                    logger.info(f"📅 RDV Google Calendar créé pour {msg.telefono}: {rdv_data}")
+                else:
+                    logger.error(f"Échec création RDV Calendar: {rdv_result.get('erreur')}")
 
             respuesta = nettoyer_marqueurs(respuesta_brute)
 
