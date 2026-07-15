@@ -144,7 +144,10 @@ async def lifespan(app: FastAPI):
     from agent.reminders import boucle_rappels
     import asyncio
     asyncio.create_task(boucle_rappels())
+    db_url = os.getenv("DATABASE_URL", "sqlite")
+    db_type = "PostgreSQL ✅" if db_url.startswith("postgresql") or db_url.startswith("postgres") else "SQLite ⚠️"
     logger.info(f"NAYA — Avent IMMO Bot démarré sur le port {PORT}")
+    logger.info(f"Base de données : {db_type}")
     yield
 
 
