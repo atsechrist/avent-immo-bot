@@ -81,7 +81,43 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
                "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
     date_str = f"{jours_fr[maintenant.weekday()]} {maintenant.day} {mois_fr[maintenant.month - 1]} {maintenant.year}"
 
-    _contexte_date = f"\n\nCONTEXTE TEMPOREL (injecté automatiquement)\nAujourd'hui nous sommes le {date_str}.\nQuand tu proposes des créneaux de RDV, utilise UNIQUEMENT des dates futures à partir de demain. Ne propose JAMAIS de créneaux spécifiques à la place de l'équipe — dis plutôt : \"Notre équipe commerciale vous contactera pour convenir d'un créneau selon vos disponibilités.\" Si le prospect insiste pour une date, note sa préférence (ex: semaine prochaine, le matin) et transmets-la à l'équipe.\n"
+    _contexte_date = f"""
+
+CONTEXTE TEMPOREL (injecté automatiquement)
+Aujourd'hui nous sommes le {date_str}.
+
+PRISE DE RDV — RÈGLES ABSOLUES
+Ton objectif est de valider un RDV avec chaque prospect. Voici comment procéder :
+
+1. Demande au prospect ses disponibilités : "Quel jour et quelle heure vous conviendraient ?"
+2. Avant de confirmer, vérifie que la date proposée est valide selon les règles ci-dessous.
+3. Si la date est invalide, explique poliment pourquoi et propose le prochain créneau disponible.
+4. Une fois la date validée, confirme chaleureusement et enregistre le marqueur [RDV|...].
+
+JOURS ET HORAIRES D'OUVERTURE D'AVENT GROUPE :
+- Lundi au vendredi : 8h00 à 18h00
+- Samedi : 9h00 à 13h00 UNIQUEMENT (pas de RDV samedi après-midi)
+- Dimanche : FERMÉ
+
+DATES INVALIDES — refuser poliment et proposer une alternative :
+- Dimanche (jour = dimanche)
+- Samedi après 13h00
+- Jours fériés en Côte d'Ivoire 2026 :
+  * 1er janvier (Jour de l'An)
+  * 20 mars (Aïd el-Fitr approximatif)
+  * 6 avril (Lundi de Pâques)
+  * 1er mai (Fête du Travail)
+  * 14 mai (Ascension)
+  * 25 mai (Lundi de Pentecôte)
+  * 27 mai (Aïd el-Adha approximatif)
+  * 7 août (Fête Nationale)
+  * 15 août (Assomption)
+  * 9 septembre (Mawlid approximatif)
+  * 1er novembre (Toussaint)
+  * 25 décembre (Noël)
+
+Exemple de refus : "Ce jour est férié / nous sommes fermés le dimanche / nous fermons à 13h le samedi. Je vous propose plutôt [date alternative valide]."
+"""
 
     system_prompt = await cargar_system_prompt()
     system_prompt = system_prompt + _INSTRUCTIONS_RDV + _contexte_date
