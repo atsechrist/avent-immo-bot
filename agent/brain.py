@@ -69,8 +69,22 @@ async def generar_respuesta(mensaje: str, historial: list[dict]) -> str:
     if not mensaje or len(mensaje.strip()) < 2:
         return await _obtener_fallback()
 
+    from datetime import datetime
+    import locale
+    try:
+        locale.setlocale(locale.LC_TIME, 'fr_FR.UTF-8')
+    except Exception:
+        pass
+    maintenant = datetime.now()
+    jours_fr = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+    mois_fr = ["janvier", "février", "mars", "avril", "mai", "juin",
+               "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
+    date_str = f"{jours_fr[maintenant.weekday()]} {maintenant.day} {mois_fr[maintenant.month - 1]} {maintenant.year}"
+
+    _contexte_date = f"\n\nCONTEXTE TEMPOREL (injecté automatiquement)\nAujourd'hui nous sommes le {date_str}.\nQuand tu proposes des créneaux de RDV, utilise UNIQUEMENT des dates futures à partir de demain. Ne propose JAMAIS de créneaux spécifiques à la place de l'équipe — dis plutôt : \"Notre équipe commerciale vous contactera pour convenir d'un créneau selon vos disponibilités.\" Si le prospect insiste pour une date, note sa préférence (ex: semaine prochaine, le matin) et transmets-la à l'équipe.\n"
+
     system_prompt = await cargar_system_prompt()
-    system_prompt = system_prompt + _INSTRUCTIONS_RDV
+    system_prompt = system_prompt + _INSTRUCTIONS_RDV + _contexte_date
 
     messages = [{"role": "system", "content": system_prompt}]
     for m in historial:
