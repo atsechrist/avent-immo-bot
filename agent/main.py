@@ -264,7 +264,8 @@ async def webhook_handler(request: Request):
             historial = await obtener_historial(msg.telefono)
 
             # ── Message de bienvenue au premier contact ───────────────────────
-            if not historial:
+            premier_contact = not historial
+            if premier_contact:
                 _welcome_image = os.getenv("WELCOME_IMAGE_URL", "")
                 _welcome_video = os.getenv("WELCOME_VIDEO_URL", "")
                 _welcome_text = (
@@ -289,6 +290,8 @@ async def webhook_handler(request: Request):
                 await proveedor.enviar_mensaje(msg.telefono, _welcome_text)
                 await guardar_mensaje(msg.telefono, "assistant", _welcome_text)
                 logger.info(f"Message de bienvenue envoyé à {msg.telefono}")
+                # Le message de bienvenue remplace la réponse IA au 1er contact
+                continue
 
             respuesta_brute = await generar_respuesta(texto_client, historial)
 
