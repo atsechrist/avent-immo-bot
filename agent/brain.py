@@ -130,7 +130,7 @@ Exemple de refus : "Ce jour est férié / nous sommes fermés le dimanche / nous
 
     try:
         response = await client.chat.complete_async(
-            model="mistral-large-latest",
+            model=os.getenv("MISTRAL_MODEL", "ministral-3b-2512"),
             messages=messages,
             max_tokens=1024,
         )
